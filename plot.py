@@ -8,7 +8,7 @@ DIM = int(DIM)
 
 # load data
 print("Loading data...")
-fractal = np.fromfile("fractal.dat")
+fractal = np.fromfile("fractal.dat", dtype="float32")
 fractal = fractal.reshape([DIM, DIM])
 
 # figure plotting

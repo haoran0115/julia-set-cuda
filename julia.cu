@@ -1,10 +1,12 @@
+#define STB_IMAGE_WRITE_IMPLEMENTATION
+#define DIM 2000
+#define ITER 512
+#define Tx 64 // could not execeed 1024
+#define Ty 64
 #include <stdio.h>
 #include <iostream>
 #include <math.h>
-#define DIM 5000
-#define ITER 1000
-#define Tx 32 // could not execeed 1024
-#define Ty 32
+#include "stb_image_write.h"
 
 // function used to check cuda error
 // reference: https://stackoverflow.com/questions/14038589/what-is-the-canonical-way-to-check-for-errors-using-the-cuda-runtime-api
@@ -19,7 +21,9 @@ inline void gpuAssert(cudaError_t code, const char *file, int line, bool abort=t
 }
 
 
-__global__ void julia(float *a, float *b, float *c, float CR, float CI, float scale) {
+__global__ void julia(float x_min, float x_max, float y_min, float y_max, char *c, float CR, float CI, float scale) {
+    float a, b;
+    int   p, q;
     float R;
     float I;
     long int T = Tx * Ty;
@@ -36,15 +40,19 @@ __global__ void julia(float *a, float *b, float *c, float CR, float CI, float sc
         h = l + n;
     }
     for (long int i = l; i < h; i++){
+        p = i%DIM;
+        q = i/DIM;
+        a = x_min*scale + ((x_max-x_min)*scale)/(DIM-1)*p;
+        b = y_min*scale + ((y_max-y_min)*scale)/(DIM-1)*q;
         for (long int j=0; j<ITER; j++){
-            R = a[i] * a[i] - b[i] * b[i] + CR;
-            I = 2*a[i]*b[i] + CI;
+            R = a * a - b * b + CR;
+            I = 2*a*b + CI;
             R = R/scale;
             I = I/scale;
-            a[i] = R;
-            b[i] = I;
+            a = R;
+            b = I;
             if ((R*R+I*I)/(scale*scale)>100.0) {
-                c[i] = 255.0 * j/ITER;
+                c[i] = 255 * j/ITER;
                 break;
             }
         }
@@ -60,63 +68,38 @@ int main () {
     float theta = M_PI * 0.919;
     float CR = cos(theta) * scale * scale;
     float CI = sin(theta) * scale * scale;
-    float  *a = (float *)malloc(DIM*DIM*sizeof(float)); // real
-    float  *b = (float *)malloc(DIM*DIM*sizeof(float)); // imaginary
-    float  *c = (float *)malloc(DIM*DIM*sizeof(float)); // density
-    float *da; // real
-    float *db; // imaginary
-    float *dc; // density
-    long int m, n, p;
-    FILE *ptr;
+    char  *c = (char *)malloc(DIM * DIM * sizeof(char)); // density
+    char  *dc; // density
 
     // initialization
     printf("Initialization start...\n");
     for (long int i=0; i<DIM*DIM; i++){
-        m = i%DIM;
-        n = i/DIM;
-        a[i] = x_min*scale + ((x_max-x_min)*scale)/(DIM-1)*m;
-        b[i] = y_min*scale + ((y_max-y_min)*scale)/(DIM-1)*n;
-        c[i] = 255.0;
+        c[i] = 255;
     }
 
-    gpuErrchk( cudaMalloc((void **)&da, DIM*DIM*sizeof(float)) );
-    gpuErrchk( cudaMalloc((void **)&db, DIM*DIM*sizeof(float)) );
-    gpuErrchk( cudaMalloc((void **)&dc, DIM*DIM*sizeof(float)) );
-    gpuErrchk( cudaMemcpy(da, a, DIM*DIM*sizeof(float), cudaMemcpyHostToDevice) );
-    gpuErrchk( cudaMemcpy(db, b, DIM*DIM*sizeof(float), cudaMemcpyHostToDevice) );
-    gpuErrchk( cudaMemcpy(dc, c, DIM*DIM*sizeof(float), cudaMemcpyHostToDevice) );
+    gpuErrchk( cudaMalloc((void **)&dc, DIM*DIM*sizeof(char)) );
+    gpuErrchk( cudaMemcpy(dc, c, DIM*DIM*sizeof(char), cudaMemcpyHostToDevice) );
     printf("Initialization done.\n");
 
     // main program
     printf("Program would be executed with %d cuda threads.\n", Tx*Ty);
     printf("Executing program...\n");
-    julia<<<Ty, Tx>>>(da, db, dc, CR, CI, scale);
+    julia<<<Ty, Tx>>>(x_min, x_max, y_min, y_max, dc, CR, CI, scale);
     gpuErrchk( cudaPeekAtLastError() );
     gpuErrchk( cudaDeviceSynchronize() );
     printf("Main program finished.\n");
     
     // copy memory from device to host
     printf("Copy memory from device to host...\n");
-    gpuErrchk( cudaMemcpy(a, da, DIM*DIM*sizeof(float), cudaMemcpyDeviceToHost) );
-    gpuErrchk( cudaMemcpy(b, db, DIM*DIM*sizeof(float), cudaMemcpyDeviceToHost) );
-    gpuErrchk( cudaMemcpy(c, dc, DIM*DIM*sizeof(float), cudaMemcpyDeviceToHost) );
-    gpuErrchk( cudaFree(da) );
-    gpuErrchk( cudaFree(db) );
+    gpuErrchk( cudaMemcpy(c, dc, DIM*DIM*sizeof(char), cudaMemcpyDeviceToHost) );
     gpuErrchk( cudaFree(dc) );
     printf("Copy memory done.\n");
 
-    // save binary file
-    printf("Saving data as binary file fractal.dat...\n");
-    ptr = fopen("fractal.dat", "wb");
-    fwrite(c, sizeof(float), DIM*DIM, ptr);
-    fclose(ptr);
-    
-    // saving coordinates
-    printf("Saving informations as text file coord.dat...\n");
-    ptr = fopen("coord.dat", "w");
-    fprintf(ptr, "%d\n%2.3f\n%2.3f\n%2.3f\n%2.3f\n%2.3f\n", DIM, theta, x_min, x_max, y_min, y_max);
-    fclose(ptr);
-    printf("Saving done.\n");
+    // write png
+    stbi_write_png("julia.png", DIM, DIM, 1, c, 0);
+
+    printf("Done.\n");
+
 
     return 0; 
 }
